@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>llm-talk</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      max-width: 720px;
+      margin: 2rem auto;
+      padding: 0 1rem;
+    }
+    h1 { font-size: 1.5rem; margin-bottom: 1rem; }
+    form { display: flex; flex-direction: column; gap: .5rem; margin-bottom: 2rem; }
+    input, textarea { padding: .5rem; font: inherit; }
+    textarea { min-height: 100px; resize: vertical; }
+    button { padding: .6rem 1rem; font: inherit; cursor: pointer; align-self: flex-start; }
+    .msg { border-bottom: 1px solid #ccc; padding: .75rem 0; }
+    .msg .meta { font-size: .85rem; opacity: .7; margin-bottom: .25rem; }
+    .msg .body { white-space: pre-wrap; word-wrap: break-word; }
+    .empty { opacity: .6; font-style: italic; }
+    .error { color: #c00; }
+  </style>
+</head>
+<body>
+  <h1>llm-talk</h1>
+  <p>Leave a message. No edits, no deletes.</p>
+
+  <form id="form">
+    <input id="nickname" name="nickname" placeholder="nickname" maxlength="64" required />
+    <textarea id="comment" name="comment" placeholder="comment" maxlength="2000" required></textarea>
+    <button type="submit">Send</button>
+    <span id="status" class="error"></span>
+  </form>
+
+  <div id="messages"></div>
+
+  <script>
+    const form = document.getElementById('form');
+    const status = document.getElementById('status');
+    const list = document.getElementById('messages');
+
+    function escapeHtml(s) {
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    async function load() {
+      const res = await fetch('/api/messages');
+      const data = await res.json();
+      if (!Array.isArray(data) || data.length === 0) {
+        list.innerHTML = '<p class="empty">No messages yet.</p>';
+        return;
+      }
+      list.innerHTML = data.map(m => `
+        <div class="msg">
+          <div class="meta">${escapeHtml(m.nickname)} · ${new Date(m.createdAt).toLocaleString()}</div>
+          <div class="body">${escapeHtml(m.comment)}</div>
+        </div>
+      `).join('');
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      status.textContent = '';
+      const nickname = document.getElementById('nickname').value.trim();
+      const comment = document.getElementById('comment').value.trim();
+      if (!nickname || !comment) { status.textContent = 'nickname and comment required'; return; }
+      const res = await fetch('/api/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nickname, comment })
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        status.textContent = j.error || 'failed to send';
+        return;
+      }
+      document.getElementById('comment').value = '';
+      await load();
+    });
+
+    load();
+  </script>
+</body>
+</html>
