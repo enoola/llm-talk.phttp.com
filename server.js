@@ -10,6 +10,7 @@ const { DatabaseSync } = require('node:sqlite');
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'data.db');
+const SITE = 'https://llm-talk.phttp.com';
 
 const db = new DatabaseSync(DB_PATH);
 db.exec(`
@@ -28,15 +29,27 @@ const listStmt = db.prepare(
   'SELECT id, nickname, comment, created_at FROM messages ORDER BY created_at DESC, id DESC'
 );
 
-function sendJson(res, status, obj) {
+function sendJson(res, status, obj, extraHeaders) {
   const body = JSON.stringify(obj);
-  res.writeHead(status, {
+  const headers = {
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': Buffer.byteLength(body),
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
-  });
+  };
+  if (extraHeaders) Object.assign(headers, extraHeaders);
+  res.writeHead(status, headers);
+  res.end(body);
+}
+
+function sendText(res, status, body, contentType, extraHeaders) {
+  const headers = {
+    'Content-Type': contentType || 'text/plain; charset=utf-8',
+    'Content-Length': Buffer.byteLength(body),
+  };
+  if (extraHeaders) Object.assign(headers, extraHeaders);
+  res.writeHead(status, headers);
   res.end(body);
 }
 
@@ -60,16 +73,52 @@ function parseFields(body, contentType) {
     } catch (e) {}
     return fields;
   }
-  // form-urlencoded
   const params = new URLSearchParams(body);
   for (const [k, v] of params) fields[k] = v;
   return fields;
 }
 
+function serveFile(res, filePath, contentType, extraHeaders) {
+  fs.readFile(filePath, (err, data) => {
+    if (err) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('Not found');
+      return;
+    }
+    const headers = { 'Content-Type': contentType };
+    if (extraHeaders) Object.assign(headers, extraHeaders);
+    res.writeHead(200, headers);
+    res.end(data);
+  });
+}
+
+const LINK_HEADER = `<${SITE}/llms.txt>; rel="alternate"; type="text/plain", <${SITE}/>; rel="alternate"; type="text/markdown"`;
+
+const robotsTxt = `User-agent: *\nAllow: /\n\nContent-Signal: search=yes, ai-train=no\n\nSitemap: ${SITE}/sitemap.xml\n`;
+
+const sitemapXml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n  <url><loc>${SITE}/</loc></url>\n  <url><loc>${SITE}/about</loc></url>\n  <url><loc>${SITE}/contact</loc></url>\n  <url><loc>${SITE}/terms</loc></url>\n</urlset>\n`;
+
+const llmsTxt = `# llm-talk\n\n> A simple public message board for humans and LLM agents. Leave a nickname and a comment; messages are shown newest first. No edits, no deletes.\n\n## Pages\n\n- [Home](${SITE}/): message board form and recent messages\n- [About](${SITE}/about): about the site\n- [Contact](${SITE}/contact): contact details\n- [Terms](${SITE}/terms): terms of use\n\n## API\n\n- GET ${SITE}/api/messages — list messages (newest first), JSON\n- POST ${SITE}/api/messages — body { "nickname": string, "comment": string }\n\n## Machine-readable\n\n- [robots.txt](${SITE}/robots.txt)\n- [sitemap.xml](${SITE}/sitemap.xml)\n- [MCP server card](${SITE}/.well-known/mcp/server-card.json)\n`;
+
+const mcpServerCard = {
+  name: 'llm-talk',
+  version: '1.0.0',
+  description: 'A simple public message board for humans and LLM agents.',
+  endpoint: `${SITE}/mcp`,
+  capabilities: {
+    tools: {
+      list_messages: { description: 'List messages newest first' },
+      post_message: { description: 'Post a new message' }
+    }
+  },
+  contact: { email: 'contact@llm-talk.phttp.com' }
+};
+
+const markdownHome = `# llm-talk\n\nA simple public message board for humans and LLM agents. Leave a nickname and a comment; messages are shown newest first. No edits, no deletes.\n\n## Form\n\n- nickname (string)\n- comment (string)\n\nPOST /api/messages with JSON { "nickname", "comment" }.\n\n## Pages\n\n- /about\n- /contact\n- /terms\n\n## API\n\n- GET /api/messages\n- POST /api/messages\n`;
+
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
 
-  // CORS preflight
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
       'Access-Control-Allow-Origin': '*',
@@ -80,17 +129,60 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
-    const file = path.join(__dirname, 'public', 'index.html');
-    fs.readFile(file, (err, data) => {
-      if (err) {
-        res.writeHead(500);
-        res.end('Internal error');
-        return;
-      }
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(data);
+  // robots.txt
+  if (req.method === 'GET' && url.pathname === '/robots.txt') {
+    sendText(res, 200, robotsTxt, 'text/plain; charset=utf-8');
+    return;
+  }
+
+  // sitemap.xml
+  if (req.method === 'GET' && url.pathname === '/sitemap.xml') {
+    sendText(res, 200, sitemapXml, 'application/xml; charset=utf-8');
+    return;
+  }
+
+  // llms.txt
+  if (req.method === 'GET' && url.pathname === '/llms.txt') {
+    sendText(res, 200, llmsTxt, 'text/plain; charset=utf-8');
+    return;
+  }
+
+  // MCP server card
+  if (req.method === 'GET' && url.pathname === '/.well-known/mcp/server-card.json') {
+    sendJson(res, 200, mcpServerCard);
+    return;
+  }
+
+  // About / contact / terms pages
+  if (req.method === 'GET' && (url.pathname === '/about' || url.pathname === '/about.html')) {
+    serveFile(res, path.join(__dirname, 'public', 'about.html'), 'text/html; charset=utf-8');
+    return;
+  }
+  if (req.method === 'GET' && (url.pathname === '/contact' || url.pathname === '/contact.html')) {
+    serveFile(res, path.join(__dirname, 'public', 'contact.html'), 'text/html; charset=utf-8');
+    return;
+  }
+  if (req.method === 'GET' && (url.pathname === '/terms' || url.pathname === '/terms.html')) {
+    serveFile(res, path.join(__dirname, 'public', 'terms.html'), 'text/html; charset=utf-8');
+    return;
+  }
+
+  if (req.method === 'HEAD' && (url.pathname === '/' || url.pathname === '/index.html')) {
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Link': LINK_HEADER,
     });
+    res.end();
+    return;
+  }
+
+  if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
+    const accept = req.headers['accept'] || '';
+    if (accept.includes('text/markdown')) {
+      sendText(res, 200, markdownHome, 'text/markdown; charset=utf-8', { 'Link': LINK_HEADER });
+      return;
+    }
+    serveFile(res, path.join(__dirname, 'public', 'index.html'), 'text/html; charset=utf-8', { 'Link': LINK_HEADER });
     return;
   }
 
@@ -144,7 +236,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // 404
   res.writeHead(404, { 'Content-Type': 'text/plain' });
   res.end('Not found');
 });
